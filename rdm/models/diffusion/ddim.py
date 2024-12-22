@@ -198,3 +198,112 @@ class DDIMSampler(object):
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
         return x_prev, pred_x0
+
+
+class DDIM_Sampler_sg(DDIMSampler):
+    def __init__(self, model, schedule="linear", mg_kwargs=None, **kwargs):
+        super().__init__(model, schedule, **kwargs)
+        self.mg_kwargs = mg_kwargs
+        
+    def compute_mg_grad(self, x0, c):
+        first_x0 = x0.clone().detach().requires_grad_(True)
+        tp = int(self.ddpm_num_timesteps * self.mg_kwargs['p_ratio']) * torch.ones((len(x0), )).long().to(x0.device)
+        
+        with torch.enable_grad():
+            ms_over_steps = torch.zeros((len(x0), self.mg_kwargs['num_mc_samples']), device=x0.device)
+        
+        for i in range(self.mg_kwargs['num_mc_samples']):
+            xt = self.model.q_sample(first_x0, tp)
+            e_t = self.model.apply_model(xt, tp, c)
+            if self.model.parameterization == "x0":
+                second_x0 = e_t
+            elif self.model.parameterization == "eps":
+                # coeff from ddpm
+                a_t = self.model.alphas_cumprod[tp[0]]
+                sqrt_one_minus_at = self.model.sqrt_one_minus_alphas_cumprod[tp[0]]
+                second_x0 = (xt - sqrt_one_minus_at * e_t) / a_t.sqrt()
+            else:
+                NotImplementedError
+            
+            with torch.enable_grad():
+                if self.mg_kwargs['use_lpips']:
+                    if first_x0.shape[1] == 1: # grayscale image
+                        first_clamp = torch.clamp(first_x0, 0, 1)
+                        second_clamp = torch.clamp(second_x0, 0, 1)
+                        first_shift, second_shift = (first_clamp * 2 - 1), (second_clamp * 2 - 1)
+                    else:
+                        first_shift, second_shift = first_x0, second_x0
+                    ms = self.mg_kwargs['loss_lpips'](first_shift, second_shift)
+                else:
+                    error = first_x0 - second_x0
+                    ms = error.view(error.shape[0], -1).norm(p=self.mg_kwargs['norm_for_mg'], dim=1)
+                ms_over_steps[:, i] = ms.view(-1)
+
+        # avg loss to get grad
+        with torch.enable_grad():
+            ms_avg_over_steps = ms_over_steps.mean(dim=-1)
+            ms_grad = torch.autograd.grad(ms_avg_over_steps.sum(), first_x0)[0]
+            
+        # normalize grad
+        if self.mg_kwargs['use_normed_grad']:
+            max_grad_values = ms_grad.abs().amax(dim=(1,2,3)).view(-1, 1, 1, 1)
+            ms_grad = ms_grad / max_grad_values
+        ms_grad = self.mg_kwargs['mg_scale'] * ms_grad
+        return ms_grad
+        
+
+    def p_sample_ddim(self, x, c, t, index, repeat_noise=False, use_original_steps=False, quantize_denoised=False,
+                      temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
+                      unconditional_guidance_scale=1., unconditional_conditioning=None):
+        b, *_, device = *x.shape, x.device
+        
+        with torch.no_grad():
+            if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
+                e_t = self.model.apply_model(x, t, c)
+                if self.model.parameterization == "x0":
+                    e_t = self.model._predict_eps_from_xstart(x, t, e_t)
+            else:
+                x_in = torch.cat([x] * 2)
+                t_in = torch.cat([t] * 2)
+                c_in = torch.cat([unconditional_conditioning, c])
+                e_t_uncond, e_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
+                e_t = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
+
+            if score_corrector is not None:  # false
+                assert self.model.parameterization == "eps"
+                e_t = score_corrector.modify_score(self.model, e_t, x, t, c, **corrector_kwargs)
+
+        alphas = self.model.alphas_cumprod if use_original_steps else self.ddim_alphas
+        alphas_prev = self.model.alphas_cumprod_prev if use_original_steps else self.ddim_alphas_prev
+        sqrt_one_minus_alphas = self.model.sqrt_one_minus_alphas_cumprod if use_original_steps else self.ddim_sqrt_one_minus_alphas
+        sigmas = self.model.ddim_sigmas_for_original_num_steps if use_original_steps else self.ddim_sigmas
+        # select parameters corresponding to the currently considered timestep
+        a_t = torch.full((b, 1, 1, 1), alphas[index], device=device)
+        a_prev = torch.full((b, 1, 1, 1), alphas_prev[index], device=device)
+        sigma_t = torch.full((b, 1, 1, 1), sigmas[index], device=device)
+        sqrt_one_minus_at = torch.full((b, 1, 1, 1), sqrt_one_minus_alphas[index],device=device)
+
+        # current prediction for x_0
+        pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()  # [b, 256, 1, 1]
+        
+        # get reconstruction grad
+        ms_grad = 0.0
+        if self.mg_kwargs['use_ms_grad'] and \
+        ( t > (self.ddpm_num_timesteps * self.mg_kwargs['t_mid']) ) and \
+        ( index % self.mg_kwargs['inter_rate'] == 0 ):
+            normed_grad = self.compute_mg_grad(pred_x0, c)
+            if self.mg_kwargs['mg_scale_type'] == 'var':
+                ms_grad = sigma_t * normed_grad
+            elif self.mg_kwargs['mg_scale_type'] == 'fixed':
+                pass
+        
+        if quantize_denoised:
+            pred_x0, _, *_ = self.model.first_stage_model.quantize(pred_x0)
+        # direction pointing to x_t
+        dir_xt = (1. - a_prev - sigma_t**2).sqrt() * e_t
+        noise = sigma_t * noise_like(x.shape, device, repeat_noise) * temperature
+        if noise_dropout > 0.:
+            noise = torch.nn.functional.dropout(noise, p=noise_dropout)
+        # DDIM + grad guidance
+        x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise + ms_grad
+        return x_prev, pred_x0

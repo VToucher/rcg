@@ -13,7 +13,7 @@ import numpy as np
 import scipy.stats as stats
 import math
 import pretrained_enc.models_pretrained_enc as models_pretrained_enc
-from rdm.models.diffusion.ddim import DDIMSampler
+from rdm.models.diffusion.ddim import DDIMSampler, DDIM_Sampler_sg
 from rdm.util import load_model
 
 
@@ -174,7 +174,8 @@ class MaskedGenerativeEncoderViT(nn.Module):
                  pretrained_enc_proj_dim=256,
                  pretrained_enc_withproj=False,
                  pretrained_rdm_ckpt=None,
-                 pretrained_rdm_cfg=None):
+                 pretrained_rdm_cfg=None,
+                 mg_kwargs=None):
         super().__init__()
         assert not (use_rep and use_class_label)
 
@@ -191,7 +192,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
                                         hidden_size=embed_dim,
                                         max_position_embeddings=256+1,
                                         dropout=0.1)
-        self.use_rep = use_rep
+        self.use_rep = use_rep  # true
         self.use_class_label = use_class_label
         if self.use_rep:
             print("Use representation as condition!")
@@ -289,7 +290,7 @@ class MaskedGenerativeEncoderViT(nn.Module):
             rdm_config = OmegaConf.load(pretrained_rdm_cfg)
             self.rdm_fake_class_label = rdm_config.model.params.cond_stage_config.params.n_classes - 1
             rdm_model = load_model(rdm_config, pretrained_rdm_ckpt)
-            self.rdm_sampler = DDIMSampler(rdm_model)
+            self.rdm_sampler = DDIMSampler(rdm_model) if mg_kwargs is None else DDIM_Sampler_sg(rdm_model, mg_kwargs=mg_kwargs)
         else:
             self.rdm_fake_class_label = 0
 
@@ -383,8 +384,9 @@ class MaskedGenerativeEncoderViT(nn.Module):
         input_embeddings_after_drop = input_embeddings[token_keep_mask.nonzero(as_tuple=True)].reshape(bsz, -1, emb_dim)
         # print("Input embedding after drop shape:", input_embeddings_after_drop.shape)
 
+        # ---------------------------------------------------------------------------- #
         # replace fake class token with rep
-        if self.use_rep:
+        if self.use_rep:  # true
             # cfg by masking representation
             drop_rep_mask = torch.rand(bsz) < self.rep_drop_prob
             drop_rep_mask = drop_rep_mask.unsqueeze(-1).cuda().float()
@@ -392,8 +394,9 @@ class MaskedGenerativeEncoderViT(nn.Module):
 
             rep = self.latent_prior_proj(rep)
             input_embeddings_after_drop[:, 0] = rep
+        # ---------------------------------------------------------------------------- #
         # class-conditional MAGE
-        if self.use_class_label:
+        if self.use_class_label:  # false
             class_emb = self.class_emb(class_label)
             input_embeddings_after_drop[:, 0] = class_emb
 
