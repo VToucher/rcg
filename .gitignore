@@ -16,3 +16,4 @@ vqgan_jax_weakaug.ckpt
 imagenet-val
 
 outputs/
+*.tar

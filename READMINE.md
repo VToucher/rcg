@@ -4,6 +4,7 @@
 ```
 conda env create -f environment.yaml
 conda activate rcg
+pip install gdown
 ```
 
 ## 2. checkpoint download
