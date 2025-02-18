@@ -509,6 +509,12 @@ class MaskedGenerativeEncoderViT(nn.Module):
                     sampled_rep = torch.cat([sampled_rep, uncond_rep], dim=0)
         else:
             class_label = None
+            # ---------------------------------------------------------------------------- #
+            sampled_rep = sampled_rep.squeeze(-1).squeeze(-1)
+            if cfg > 0:
+                uncond_rep = self.fake_latent.repeat(bsz, 1)
+                sampled_rep = torch.cat([sampled_rep, uncond_rep], dim=0)
+            # ---------------------------------------------------------------------------- #
 
         if self.use_class_label:
             assert cfg == 0
