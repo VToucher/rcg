@@ -1,10 +1,14 @@
 # RCG PyTorch Implementation
 
 ## 1. environment
-```
+```bash
 conda env create -f environment.yaml
 conda activate rcg
 pip install gdown
+```
+### 1.1 config after dreamood
+```bash
+pip install timm==0.3.2
 ```
 
 ## 2. checkpoint download

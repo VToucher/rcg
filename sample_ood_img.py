@@ -1,7 +1,7 @@
 import json
 import numpy as np
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = "3" 
+os.environ['CUDA_VISIBLE_DEVICES'] = "0" 
 os.environ['http_proxy'] = '10.106.130.4:3128'
 os.environ['https_proxy'] = '10.106.130.4:3128'
 import time
@@ -18,12 +18,12 @@ import torchvision.datasets as datasets
 from pixel_generator.mage import models_mage
 from PIL import Image
 from imagenet_clstolabel import IMGNET_CLASS2LABEL
-from IPython.display import display
-import lpips
+# from IPython.display import display
+# import lpips
 
 
 # imagenet100 class idx
-base_count = 0
+base_count = 10
 in_100_idx = [6, 8, 18, 21, 23, 42, 78, 85, 94, 105, 
               107, 113, 124, 130, 148, 151, 272, 281, 288, 291, 
               292, 301, 308, 310, 311, 323, 327, 331, 333, 337, 
@@ -35,18 +35,18 @@ in_100_idx = [6, 8, 18, 21, 23, 42, 78, 85, 94, 105,
               677, 711, 721, 742, 748, 764, 774, 783, 819, 827, 
               843, 851, 866, 872, 879, 889, 902, 913, 937, 949]
 
-def viz_torchimage(image):
-    image = torch.clamp(image, 0, 1)
-    image_np = image.detach().cpu().numpy().transpose([1, 2, 0])
-    image_np = Image.fromarray(np.uint8(image_np*255))
-    display(image_np)
+# def viz_torchimage(image):
+#     image = torch.clamp(image, 0, 1)
+#     image_np = image.detach().cpu().numpy().transpose([1, 2, 0])
+#     image_np = Image.fromarray(np.uint8(image_np*255))
+#     display(image_np)
 
-def save_torchimg(image, class_label):
+def save_torchimg(image, class_label, out_dir='outputs/ood_samples/'):
     global base_count
     image = torch.clamp(image, 0, 1)
     image_np = image.detach().cpu().numpy().transpose([1, 2, 0])
     image_np = Image.fromarray(np.uint8(image_np*255))
-    save_path = os.path.join('outputs/ood_samples/', str(in_100_idx.index(class_label)))
+    save_path = os.path.join(out_dir, str(in_100_idx.index(class_label)))
     os.makedirs(save_path, exist_ok=True)
     class_name = IMGNET_CLASS2LABEL[class_label].split(',')[0]
     image_np.save(os.path.join(save_path, f'{class_name}_{base_count:05}.png'))
@@ -68,7 +68,7 @@ mg_kwargs = {
     'use_ms_grad': True,
     'norm_for_mg': 2.0,
     't_mid': -1.0,  # -1.0 for no early stop
-    'mg_scale': 0.15,
+    'mg_scale': 0.05,
     'p_ratio': 0.5,
     'num_mc_samples': 1,
     'mg_scale_type': 'var',
@@ -76,9 +76,9 @@ mg_kwargs = {
     'use_lpips': False,
     'inter_rate': 1,
 }
-if mg_kwargs['use_lpips']:
-    loss_lpips = lpips.LPIPS(net='alex').cuda()
-    mg_kwargs['loss_lpips'] = loss_lpips
+# if mg_kwargs['use_lpips']:
+#     loss_lpips = lpips.LPIPS(net='alex').cuda()
+#     mg_kwargs['loss_lpips'] = loss_lpips
 
 # mage infer args
 n_image_to_gen = 1
@@ -110,15 +110,23 @@ _ = model.eval()
 
 # ------------------------------- 3. mage infer ------------------------------ #
 if class_cond:
-    for _ in range(1000):
-        for class_label in in_100_idx[75:100]:  # [1, 323, 985], [:25], [25:50], [50:75], [75:100]
-            print("{}: {}".format(class_label, IMGNET_CLASS2LABEL[class_label]))
-            class_label = class_label * torch.ones(1).cuda().long()
-            gen_images, _ = model.gen_image(1, num_iter=mage_steps, choice_temperature=mage_temp, sampled_rep=None, rdm_steps=rdm_steps, eta=rdm_eta, cfg=cfg, class_label=class_label)
-            # viz_torchimage(gen_images[0])
-            save_torchimg(gen_images[0], class_label.item())
+    # for _ in range(1000):
+    #     for class_label in in_100_idx[75:100]:  # [1, 323, 985], [:25], [25:50], [50:75], [75:100]
+    #         print("{}: {}".format(class_label, IMGNET_CLASS2LABEL[class_label]))
+    #         class_label = class_label * torch.ones(1).cuda().long()
+    #         gen_images, _ = model.gen_image(1, num_iter=mage_steps, choice_temperature=mage_temp, sampled_rep=None, rdm_steps=rdm_steps, eta=rdm_eta, cfg=cfg, class_label=class_label)
+    #         # viz_torchimage(gen_images[0])
+    #         save_torchimg(gen_images[0], class_label.item())
+    
+    for _ in range(20):
+        class_label = 949
+        print("{}: {}".format(class_label, IMGNET_CLASS2LABEL[class_label]))
+        class_label = class_label * torch.ones(1).cuda().long()
+        gen_images, _ = model.gen_image(1, num_iter=mage_steps, choice_temperature=mage_temp, sampled_rep=None, rdm_steps=rdm_steps, eta=rdm_eta, cfg=cfg, class_label=class_label)
+        # viz_torchimage(gen_images[0])
+        save_torchimg(gen_images[0], class_label.item(), out_dir=f'outputs/ood_samples_mage/mg_scale_{mg_kwargs["mg_scale"]}')
 
 else:
     for i in range(n_image_to_gen):
         gen_images, _ = model.gen_image(1, num_iter=mage_steps, choice_temperature=mage_temp, sampled_rep=None, rdm_steps=rdm_steps, eta=rdm_eta, cfg=cfg, class_label=None)
-        viz_torchimage(gen_images[0])
+        # viz_torchimage(gen_images[0])

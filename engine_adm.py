@@ -106,10 +106,10 @@ def train_one_epoch(model: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def gen_img(model, model_without_ddp, diffusion, ema_params, rdm_sampler, args, epoch, batch_size=16, log_writer=None, use_ema=False):
+def gen_img(model, model_without_ddp, diffusion, ema_params, rdm_sampler, args, epoch, batch_size=16, log_writer=None, use_ema=False, cond_idx=0):
     model.eval()
     num_steps = args.num_images // (batch_size * misc.get_world_size()) + 1
-    save_folder = os.path.join(args.output_dir, "steps{}".format(args.gen_timestep_respacing))
+    save_folder = os.path.join(args.output_dir, "steps{}_mgscale_{}".format(args.gen_timestep_respacing, rdm_sampler.mg_kwargs['mg_scale']))
     if misc.get_rank() == 0:
         if not os.path.exists(save_folder):
             os.makedirs(save_folder)
@@ -133,7 +133,7 @@ def gen_img(model, model_without_ddp, diffusion, ema_params, rdm_sampler, args, 
                 shape = [rdm_sampler.model.model.diffusion_model.in_channels,
                          rdm_sampler.model.model.diffusion_model.image_size,
                          rdm_sampler.model.model.diffusion_model.image_size]
-                cond = {"class_label": torch.zeros(batch_size).cuda().long()}
+                cond = {"class_label": torch.zeros(batch_size).cuda().long() + cond_idx}
                 cond = rdm_sampler.model.get_learned_conditioning(cond)
 
                 sampled_rep, _ = rdm_sampler.sample(args.rdm_steps, conditioning=cond, batch_size=batch_size,
